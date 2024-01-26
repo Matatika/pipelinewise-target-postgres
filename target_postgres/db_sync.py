@@ -9,6 +9,7 @@ import itertools
 import time
 from collections.abc import MutableMapping
 from singer import get_logger
+from singer.metrics import Counter
 
 
 # pylint: disable=missing-function-docstring,missing-class-docstring
@@ -382,28 +383,31 @@ class DbSync:
 
         with self.open_connection() as connection:
             with connection.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                inserts = 0
-                updates = 0
+                with Counter('record_count', {'stream': stream}) as counter:
+                    inserts = 0
+                    updates = 0
 
-                temp_table = self.table_name(stream_schema_message['stream'], is_temporary=True)
-                cur.execute(self.create_table_query(table_name=temp_table, is_temporary=True))
+                    temp_table = self.table_name(stream_schema_message['stream'], is_temporary=True)
+                    cur.execute(self.create_table_query(table_name=temp_table, is_temporary=True))
 
-                copy_sql = "COPY {} ({}) FROM STDIN WITH (FORMAT CSV, ESCAPE '\\')".format(
-                    temp_table,
-                    ', '.join(self.column_names())
-                )
-                self.logger.debug(copy_sql)
-                with open(file, "rb") as f:
-                    cur.copy_expert(copy_sql, f)
-                if len(self.stream_schema_message['key_properties']) > 0:
-                    cur.execute(self.update_from_temp_table(temp_table))
-                    updates = cur.rowcount
-                cur.execute(self.insert_from_temp_table(temp_table))
-                inserts = cur.rowcount
+                    copy_sql = "COPY {} ({}) FROM STDIN WITH (FORMAT CSV, ESCAPE '\\')".format(
+                        temp_table,
+                        ', '.join(self.column_names())
+                    )
+                    self.logger.debug(copy_sql)
+                    with open(file, "rb") as f:
+                        cur.copy_expert(copy_sql, f)
+                    if len(self.stream_schema_message['key_properties']) > 0:
+                        cur.execute(self.update_from_temp_table(temp_table))
+                        updates = cur.rowcount
+                        counter.increment(amount = cur.rowcount)
+                    cur.execute(self.insert_from_temp_table(temp_table))
+                    inserts = cur.rowcount
+                    counter.increment(amount = cur.rowcount)
 
-                self.logger.info('Loading into %s: %s',
-                                 self.table_name(stream, False),
-                                 json.dumps({'inserts': inserts, 'updates': updates, 'size_bytes': size_bytes}))
+                    self.logger.info('Loading into %s: %s',
+                                    self.table_name(stream, False),
+                                    json.dumps({'inserts': inserts, 'updates': updates, 'size_bytes': size_bytes}))
 
     # pylint: disable=duplicate-string-formatting-argument
     def insert_from_temp_table(self, temp_table):
