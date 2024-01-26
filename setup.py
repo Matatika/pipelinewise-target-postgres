@@ -18,10 +18,11 @@ setup(name="pipelinewise-target-postgres",
       ],
       py_modules=["target_postgres"],
       install_requires=[
-          'pipelinewise-singer-python==1.*',
+          'jsonschema==3.2.0',
+          'singer-python @ git+https://github.com/Matatika/singer-python',
           'psycopg2-binary==2.9.5',
           'inflection==0.3.1',
-          'joblib==1.2.0'
+          'joblib==1.2.0',
       ],
       extras_require={
           "test": [
