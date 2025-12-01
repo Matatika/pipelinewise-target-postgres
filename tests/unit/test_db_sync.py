@@ -208,6 +208,57 @@ class TestUnit(unittest.TestCase):
                 'c_obj__nested_prop3__multi_nested_prop2': {'type': ['null', 'string']}
             }
 
+        pre_flattened_schema = {
+            "type": "object",
+            "properties": {
+                "c_pk": {"type": ["null", "integer"]},
+                "c_varchar": {"type": ["null", "string"]},
+                "c_int": {"type": ["null", "integer"]},
+                "c_obj__nested_prop1": {"type": ["null", "string"]},
+                "c_obj__nested_prop2": {"type": ["null", "string"]},
+                "c_obj__nested_prop3__multi_nested_prop1": {"type": ["null", "string"]},
+                "c_obj__nested_prop3__multi_nested_prop2": {"type": ["null", "string"]},
+            },
+        }
+
+        # NO ADDITIONAL FLATTENING
+        assert (
+            flatten_schema(pre_flattened_schema, True)
+            == pre_flattened_schema["properties"]
+        )
+
+        pre_flattened_schema_long_key = {
+            "type": "object",
+            "properties": {
+                "c_obj__nested_prop1__multi_nested_prop1__multi_multi_nested_prop1": {
+                    "type": ["null", "string"]
+                }
+            },
+        }
+
+        # REDUCED KEY
+        assert flatten_schema(pre_flattened_schema_long_key, True) == {
+            "co_p1_np1_mnp1": {"type": ["null", "string"]}
+        }
+
+        pre_flattened_schema_long_similar_keys = {
+            "type": "object",
+            "properties": {
+                "ad_group_criterion__position_estimates__estimated_add_clicks_at_first_position_cpc": {
+                    "type": ["null", "integer"]
+                },
+                "ad_group_criterion__position_estimates__estimated_add_cost_at_first_position_cpc": {
+                    "type": ["null", "integer"]
+                },
+            },
+        }
+
+        # DEDUPED REDUCED KEYS
+        assert flatten_schema(pre_flattened_schema_long_similar_keys, True, max_level=0) == {
+            "agc_e_acafpc": {"type": ["null", "integer"]},
+            "agc_e_acafpc__1": {"type": ["null", "integer"]}
+        }
+
     def test_flatten_record(self):
         """Test flattening of RECORD messages"""
         flatten_record = target_postgres.db_sync.flatten_record

@@ -1,15 +1,18 @@
+import itertools
 import json
+import re
 import sys
+import time
+import uuid
+from collections.abc import MutableMapping
+
+import inflection
 import psycopg2
 import psycopg2.extras
-import inflection
-import re
-import uuid
-import itertools
-import time
-from collections.abc import MutableMapping
 from singer import get_logger
 from singer.metrics import Counter
+
+MAX_IDENTIFIER_LENGTH = 63
 
 
 # pylint: disable=missing-function-docstring,missing-class-docstring
@@ -93,7 +96,9 @@ def flatten_key(k, parent_key, sep, should_inflect):
     full_key = parent_key + [k]
     inflected_key = [inflect_column_name(n, should_inflect) for n in full_key]
     reducer_index = 0
-    while len(sep.join(inflected_key)) >= 63 and reducer_index < len(inflected_key):
+    while len(sep.join(inflected_key)) >= MAX_IDENTIFIER_LENGTH and reducer_index < len(
+        inflected_key
+    ):
         reduced_key = re.sub(r'[a-z]', '', inflection.camelize(inflected_key[reducer_index]))
         inflected_key[reducer_index] = \
             (reduced_key if len(reduced_key) > 1 else inflected_key[reducer_index][0:3]).lower()
@@ -101,6 +106,33 @@ def flatten_key(k, parent_key, sep, should_inflect):
 
     return sep.join(inflected_key)
 
+def _uniquify_column_names(items):
+    """Ensure column names are unique by adding numeric suffixes when needed."""
+    uniquified_items = []
+    used_names = set()
+    base_counts = {}
+
+    for key, value in items:
+        base = key[:MAX_IDENTIFIER_LENGTH]
+        base_counts[base] = base_counts.get(base, 0)
+
+        def make_candidate(count):
+            if count == 0:
+                return base
+            suffix = f"__{count}"
+            prefix_len = MAX_IDENTIFIER_LENGTH - len(suffix)
+            return f"{base[:prefix_len]}{suffix}"
+
+        candidate = make_candidate(base_counts[base])
+        while candidate in used_names:
+            base_counts[base] += 1
+            candidate = make_candidate(base_counts[base])
+
+        used_names.add(candidate)
+        base_counts[base] += 1
+        uniquified_items.append((candidate, value))
+
+    return uniquified_items
 
 # pylint: disable=dangerous-default-value,invalid-name,too-many-arguments
 def flatten_schema(d, should_inflect, parent_key=[], sep='__', level=0, max_level=0):
@@ -135,11 +167,13 @@ def flatten_schema(d, should_inflect, parent_key=[], sep='__', level=0, max_leve
 
     key_func = lambda item: item[0]
     sorted_items = sorted(items, key=key_func)
-    for k, g in itertools.groupby(sorted_items, key=key_func):
+    uniquified_items = _uniquify_column_names(sorted_items)
+
+    for k, g in itertools.groupby(uniquified_items, key=key_func):
         if len(list(g)) > 1:
             raise ValueError('Duplicate column name produced in schema: {}'.format(k))
 
-    return dict(sorted_items)
+    return dict(uniquified_items)
 
 
 # pylint: disable=redefined-outer-name
@@ -164,7 +198,29 @@ def flatten_record(d, should_inflect, flatten_schema=None, parent_key=[], sep='_
                                         max_level=max_level).items())
         else:
             items.append((new_key, json.dumps(v) if _should_json_dump_value(k, v, flatten_schema) else v))
-    return dict(items)
+
+    uniques = {}
+    duplicate_items = []
+    duplicate_keys = set()
+
+    for item in items:
+        k, v = item
+        if k in duplicate_keys:
+            duplicate_items.append(item)
+        elif k in uniques:
+            duplicate_items.append((k, uniques.pop(k)))
+            duplicate_items.append(item)
+            duplicate_keys.add(k)
+        else:
+            uniques[k] = v
+
+    if not duplicate_items:
+        return uniques
+
+    uniquified_items = _uniquify_column_names(duplicate_items)
+    uniques.update(uniquified_items)
+
+    return uniques
 
 
 def primary_column_names(stream_schema_message, should_inflect):
