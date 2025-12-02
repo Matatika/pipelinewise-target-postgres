@@ -1,10 +1,10 @@
-import itertools
 import json
 import re
 import sys
 import time
 import uuid
 from collections.abc import MutableMapping
+from functools import lru_cache
 
 import inflection
 import psycopg2
@@ -106,13 +106,13 @@ def flatten_key(k, parent_key, sep, should_inflect):
 
     return sep.join(inflected_key)
 
-def _uniquify_column_names(items):
-    """Ensure column names are unique by adding numeric suffixes when needed."""
-    uniquified_items = []
-    used_names = set()
+@lru_cache
+def _iter_duplicate_key_updates(keys):
+    """Yield (index, new_key) for duplicate keys after applying numeric suffixes."""
+    used_keys = set()
     base_counts = {}
 
-    for key, value in items:
+    for i, key in enumerate(keys):
         base = key[:MAX_IDENTIFIER_LENGTH]
         base_counts[base] = base_counts.get(base, 0)
 
@@ -124,15 +124,23 @@ def _uniquify_column_names(items):
             return f"{base[:prefix_len]}{suffix}"
 
         candidate = make_candidate(base_counts[base])
-        while candidate in used_names:
+        while candidate in used_keys:
             base_counts[base] += 1
             candidate = make_candidate(base_counts[base])
 
-        used_names.add(candidate)
+        used_keys.add(candidate)
         base_counts[base] += 1
-        uniquified_items.append((candidate, value))
 
-    return uniquified_items
+        if candidate != key:
+            yield i, candidate
+
+
+def _ensure_unique_item_keys(items):
+    """Update (name, value) tuples in place so all names become unique."""
+    keys = tuple(k for k, _ in items)
+    for i, new_key in _iter_duplicate_key_updates(keys):
+        _, v = items[i]
+        items[i] = (new_key, v)
 
 # pylint: disable=dangerous-default-value,invalid-name,too-many-arguments
 def flatten_schema(d, should_inflect, parent_key=[], sep='__', level=0, max_level=0):
@@ -165,15 +173,9 @@ def flatten_schema(d, should_inflect, parent_key=[], sep='__', level=0, max_leve
                     list(v.values())[0][0]['type'] = ['null', 'object']
                     items.append((new_key, list(v.values())[0][0]))
 
-    key_func = lambda item: item[0]
-    sorted_items = sorted(items, key=key_func)
-    uniquified_items = _uniquify_column_names(sorted_items)
-
-    for k, g in itertools.groupby(uniquified_items, key=key_func):
-        if len(list(g)) > 1:
-            raise ValueError('Duplicate column name produced in schema: {}'.format(k))
-
-    return dict(uniquified_items)
+    sorted_items = sorted(items, key=lambda item: item[0])
+    _ensure_unique_item_keys(sorted_items)
+    return dict(sorted_items)
 
 
 # pylint: disable=redefined-outer-name
@@ -199,28 +201,8 @@ def flatten_record(d, should_inflect, flatten_schema=None, parent_key=[], sep='_
         else:
             items.append((new_key, json.dumps(v) if _should_json_dump_value(k, v, flatten_schema) else v))
 
-    uniques = {}
-    duplicate_items = []
-    duplicate_keys = set()
-
-    for item in items:
-        k, v = item
-        if k in duplicate_keys:
-            duplicate_items.append(item)
-        elif k in uniques:
-            duplicate_items.append((k, uniques.pop(k)))
-            duplicate_items.append(item)
-            duplicate_keys.add(k)
-        else:
-            uniques[k] = v
-
-    if not duplicate_items:
-        return uniques
-
-    uniquified_items = _uniquify_column_names(duplicate_items)
-    uniques.update(uniquified_items)
-
-    return uniques
+    _ensure_unique_item_keys(items)
+    return dict(items)
 
 
 def primary_column_names(stream_schema_message, should_inflect):
